@@ -1,11 +1,24 @@
-string operacionesXml = string.Join(Environment.NewLine, operaciones.Select(op => $"<operation value='{op}'/>"));
-
-string xml2 = $@"<?xml version='1.0' encoding='UTF-8'?>
+private static string GenerarXmlApi1(string materialGroup)
+{
+    return $@"<?xml version='1.0' encoding='UTF-8'?>
 <request>
-    <materialgroup value='{matGroup}'/>
+    <materialgroup value='{materialGroup}'/>
+    <start time='2025-06-01T16:53:00'/>
+    <end time='2025-06-03T16:53:00'/>
+</request>";
+}
+
+private static string GenerarXmlApi2(string materialGroup, List<string> operaciones)
+{
+    string operacionesXml = string.Join(Environment.NewLine, operaciones.Select(op => $"<operation value='{op}'/>"));
+
+    return $@"<?xml version='1.0' encoding='UTF-8'?>
+<request>
+    <materialgroup value='{materialGroup}'/>
     <start time='2025-08-02T16:53:00'/>
     <end time='2025-08-03T16:53:00'/>
     <operations>
         {operacionesXml}
     </operations>
 </request>";
+}

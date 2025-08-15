@@ -1,143 +1,52 @@
-private static async Task EjecutarProcesoAsync()
-{
-    const int BatchSize = 500;
-    const string connectionString = "Host=oaqtapp01pkg01;Username=grafanaAdmin;Password=grafana_admin;Database=intermedial_qt";
-
-    BlockingCollection<JArray> colaApi1 = new();
-    BlockingCollection<JArray> colaApi2 = new();
-
-    // Consumidor API 1
-    Task consumidorApi1 = Task.Run(() =>
+    private static void InsertarLoteEnBloques(JArray data, NpgsqlConnection conn, HashSet<string> sfcExcluidos)
     {
-        using var conn = new NpgsqlConnection(connectionString);
-        conn.Open();
-        var sfcExcluidos = CargarSfcExcluidos(conn);
-
-        foreach (var lote in colaApi1.GetConsumingEnumerable())
+        const int BatchSize = 500;
+        var registrosFiltrados = new List<JToken>();
+        foreach (var record in data)
         {
-            InsertarLoteEnBloques(lote, conn, sfcExcluidos, BatchSize, "tabla_api1");
-        }
-    });
-
-    // Consumidor API 2
-    Task consumidorApi2 = Task.Run(() =>
-    {
-        using var conn = new NpgsqlConnection(connectionString);
-        conn.Open();
-        var sfcExcluidos = CargarSfcExcluidos(conn);
-
-        foreach (var lote in colaApi2.GetConsumingEnumerable())
-        {
-            InsertarLoteEnBloques(lote, conn, sfcExcluidos, BatchSize, "tabla_api2");
-        }
-    });
-
-    string xml1 = "<?xml version='1.0' encoding='UTF-8'?> " +
-        "<request> " +
-        "<materialgroup value ='GM_PCBA'/>" +
-        "<start time='2025-06-01T16:53:00'/>" +
-        "<end time='2025-06-03T16:53:00'/>" +
-        "</request>";
-
-    string xml2 = "<?xml version='1.0' encoding='UTF-8'?> " +
-       "<request> " +
-       "<materialgroup value ='GM_PCBA'/>" +
-       "<start time='2025-08-02T16:53:00'/>" +
-       "<end time='2025-08-03T16:53:00'/>" +
-       "<operations>" +
-            "<operation value='OP_ICT'/>" +
-            "<operation value='OP_VQA'/>" +
-       "</operations>" +
-       "</request>";
-
-    var tareaApi1 = ConsultarApiAsync(
-        "https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory_Done",
-        xml1,
-        colaApi1,
-        "API 1"
-    );
-
-    var tareaApi2 = ConsultarApiAsync(
-        "https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory",
-        xml2,
-        colaApi2,
-        "API 2"
-    );
-
-    await Task.WhenAll(tareaApi1, tareaApi2);
-
-    colaApi1.CompleteAdding();
-    colaApi2.CompleteAdding();
-
-    await Task.WhenAll(consumidorApi1, consumidorApi2);
-}
-
-private static async Task ConsultarApiAsync(string url, string xmlBody, BlockingCollection<JArray> cola, string nombreApi)
-{
-    try
-    {
-        var options = new RestClientOptions(url)
-        {
-            Timeout = TimeSpan.FromMinutes(2)
-        };
-
-        var client = new RestClient(options);
-        var request = new RestRequest("", Method.Post);
-        request.AddHeader("Content-Type", "text/plain");
-        request.AddParameter("text/plain", xmlBody, ParameterType.RequestBody);
-
-        var response = await client.ExecuteAsync(request);
-
-        if (!response.IsSuccessful)
-        {
-            Console.WriteLine($"{nombreApi} error: {response.StatusCode}");
-            return;
+            string sfc = record["SFC"]?.ToString();
+            if (!sfcExcluidos.Contains(sfc))
+                registrosFiltrados.Add(record);
         }
 
-        var parsed = JArray.Parse(response.Content);
-        cola.Add(parsed);
-        Console.WriteLine($"{nombreApi} terminó correctamente.");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"{nombreApi} falló: {ex.Message}");
-    }
-}
-
-private static void InsertarLoteEnBloques(JArray lote, NpgsqlConnection conn, HashSet<string> sfcExcluidos, int batchSize, string tablaDestino)
-{
-    var registros = new List<JToken>();
-
-    foreach (var item in lote)
-    {
-        string sfc = item["SFC"]?.ToString();
-        if (!string.IsNullOrEmpty(sfc) && !sfcExcluidos.Contains(sfc))
+        for (int i = 0; i < registrosFiltrados.Count; i += BatchSize)
         {
-            registros.Add(item);
-        }
+            int currentBatchSize = Math.Min(BatchSize, registrosFiltrados.Count - i);
+            var sb = new StringBuilder();
+            var parameters = new List<NpgsqlParameter>();
 
-        if (registros.Count >= batchSize)
-        {
-            InsertarEnBD(registros, conn, tablaDestino);
-            registros.Clear();
+            sb.AppendLine("INSERT INTO intermedial_qt.public.staging_data (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation) VALUES");
+
+            for (int j = 0; j < currentBatchSize; j++)
+            {
+                var index = i + j;
+                var record = registrosFiltrados[index];
+                string suffix = j.ToString();
+
+                sb.Append($"(@sfc{suffix}, @item{suffix}, @dateState{suffix}, @itemDesc{suffix}, @itemType{suffix}, @itemRev{suffix}, @queueOperation{suffix})");
+                if (j < currentBatchSize - 1) sb.Append(",");
+                sb.AppendLine();
+
+                parameters.Add(new NpgsqlParameter($"sfc{suffix}", record["SFC"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"item{suffix}", record["ITEM"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"dateState{suffix}", record["DONE_DATE"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"itemDesc{suffix}", record["ITEM_DESC"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"itemType{suffix}", record["ITEM_TYPE"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"itemRev{suffix}", record["ITEM_REV"]?.ToString() ?? ""));
+                parameters.Add(new NpgsqlParameter($"queueOperation{suffix}", record["DONE_OPERATION"]?.ToString() ?? ""));
+            }
+
+            sb.AppendLine("ON CONFLICT (sfc) DO UPDATE SET");
+            sb.AppendLine("item = EXCLUDED.item,");
+            sb.AppendLine("date_state = EXCLUDED.date_state,");
+            sb.AppendLine("item_desc = EXCLUDED.item_desc,");
+            sb.AppendLine("item_type = EXCLUDED.item_type,");
+            sb.AppendLine("item_rev = EXCLUDED.item_rev,");
+            sb.AppendLine("queue_operation = EXCLUDED.queue_operation,");
+
+            using var cmd = new NpgsqlCommand(sb.ToString(), conn);
+            cmd.Parameters.AddRange(parameters.ToArray());
+            cmd.ExecuteNonQuery();
         }
     }
-
-    if (registros.Count > 0)
-        InsertarEnBD(registros, conn, tablaDestino);
-}
-
-private static void InsertarEnBD(List<JToken> registros, NpgsqlConnection conn, string tablaDestino)
-{
-    if (registros.Count == 0) return;
-
-    var values = new List<string>();
-    foreach (var r in registros)
-    {
-        values.Add($"('{r["SFC"]}', '{r["Material"]}', '{r["Cantidad"]}')");
-    }
-
-    using var cmd = conn.CreateCommand();
-    cmd.CommandText = $"INSERT INTO {tablaDestino} (SFC, Material, Cantidad) VALUES " + string.Join(",", values);
-    cmd.ExecuteNonQuery();
 }

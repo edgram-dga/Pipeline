@@ -1,52 +1,75 @@
-    private static void InsertarLoteEnBloques(JArray data, NpgsqlConnection conn, HashSet<string> sfcExcluidos)
+
+//Con COPY vamos a reducir el tiempo de inserción drásticamente porque todo el lote se envía como un solo stream binario en vez de miles de sentencias INSERT.
+private static void InsertarConCopyEnStaging(JArray data, NpgsqlConnection conn, HashSet<string> sfcExcluidos)
+{
+    using var writer = conn.BeginBinaryImport(@"
+        COPY staging_data (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation)
+        FROM STDIN (FORMAT BINARY)
+    ");
+
+    foreach (var record in data)
     {
-        const int BatchSize = 500;
-        var registrosFiltrados = new List<JToken>();
-        foreach (var record in data)
-        {
-            string sfc = record["SFC"]?.ToString();
-            if (!sfcExcluidos.Contains(sfc))
-                registrosFiltrados.Add(record);
-        }
+        string sfc = record["SFC"]?.ToString();
+        if (string.IsNullOrEmpty(sfc) || sfcExcluidos.Contains(sfc))
+            continue;
 
-        for (int i = 0; i < registrosFiltrados.Count; i += BatchSize)
-        {
-            int currentBatchSize = Math.Min(BatchSize, registrosFiltrados.Count - i);
-            var sb = new StringBuilder();
-            var parameters = new List<NpgsqlParameter>();
+        // Campos que cambian de nombre entre APIs
+        string dateState = record["DONE_DATE"]?.ToString() ?? record["DATE_QUEUED"]?.ToString() ?? "";
+        string queueOperation = record["DONE_OPERATION"]?.ToString() ?? record["QUEUE_OPERATION"]?.ToString() ?? "";
 
-            sb.AppendLine("INSERT INTO intermedial_qt.public.staging_data (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation) VALUES");
-
-            for (int j = 0; j < currentBatchSize; j++)
-            {
-                var index = i + j;
-                var record = registrosFiltrados[index];
-                string suffix = j.ToString();
-
-                sb.Append($"(@sfc{suffix}, @item{suffix}, @dateState{suffix}, @itemDesc{suffix}, @itemType{suffix}, @itemRev{suffix}, @queueOperation{suffix})");
-                if (j < currentBatchSize - 1) sb.Append(",");
-                sb.AppendLine();
-
-                parameters.Add(new NpgsqlParameter($"sfc{suffix}", record["SFC"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"item{suffix}", record["ITEM"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"dateState{suffix}", record["DONE_DATE"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"itemDesc{suffix}", record["ITEM_DESC"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"itemType{suffix}", record["ITEM_TYPE"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"itemRev{suffix}", record["ITEM_REV"]?.ToString() ?? ""));
-                parameters.Add(new NpgsqlParameter($"queueOperation{suffix}", record["DONE_OPERATION"]?.ToString() ?? ""));
-            }
-
-            sb.AppendLine("ON CONFLICT (sfc) DO UPDATE SET");
-            sb.AppendLine("item = EXCLUDED.item,");
-            sb.AppendLine("date_state = EXCLUDED.date_state,");
-            sb.AppendLine("item_desc = EXCLUDED.item_desc,");
-            sb.AppendLine("item_type = EXCLUDED.item_type,");
-            sb.AppendLine("item_rev = EXCLUDED.item_rev,");
-            sb.AppendLine("queue_operation = EXCLUDED.queue_operation,");
-
-            using var cmd = new NpgsqlCommand(sb.ToString(), conn);
-            cmd.Parameters.AddRange(parameters.ToArray());
-            cmd.ExecuteNonQuery();
-        }
+        writer.StartRow();
+        writer.Write(sfc, NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(record["ITEM"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(dateState, NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(record["ITEM_DESC"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(record["ITEM_TYPE"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(record["ITEM_REV"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
+        writer.Write(queueOperation, NpgsqlTypes.NpgsqlDbType.Text);
     }
+
+    writer.Complete();
 }
+
+
+///Movimiento de staging_data a data_monitor sin duplicados Una vez insertados los datos de las dos APIs, hacemos el merge:
+
+private static void MoverStagingADataMonitor(NpgsqlConnection conn)
+{
+    string sql = @"
+        INSERT INTO data_monitor (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation)
+        SELECT sfc, item, date_state, item_desc, item_type, item_rev, queue_operation
+        FROM staging_data
+        ON CONFLICT (sfc) DO UPDATE SET
+            item = EXCLUDED.item,
+            date_state = EXCLUDED.date_state,
+            item_desc = EXCLUDED.item_desc,
+            item_type = EXCLUDED.item_type,
+            item_rev = EXCLUDED.item_rev,
+            queue_operation = EXCLUDED.queue_operation;
+    ";
+
+    using var cmd = new NpgsqlCommand(sql, conn);
+    cmd.ExecuteNonQuery();
+}
+
+
+
+
+3️⃣ Flujo de uso
+
+Después de cada consumo de API (paralelo), insertas en staging_data así:
+
+
+using var conn = new NpgsqlConnection(connectionString);
+conn.Open();
+
+// Insertar API1
+InsertarConCopyEnStaging(resultadoApi1, conn, sfcExcluidos);
+
+// Insertar API2
+InsertarConCopyEnStaging(resultadoApi2, conn, sfcExcluidos);
+
+
+Cuando ambas APIs terminen:
+
+MoverStagingADataMonitor(conn);

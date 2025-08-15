@@ -1,59 +1,36 @@
-using System.Diagnostics;
+ // Generar XML dinámico para API1 y API2
+        string xml1 = $@"<?xml version='1.0' encoding='UTF-8'?>
+            <request>
+                <materialgroup value='{matGroup}'/>
+                <start time='2025-06-01T16:53:00'/>
+                <end time='2025-06-03T16:53:00'/>
+            </request>";
 
-private static async Task EjecutarProcesoAsync()
-{
-    const string connectionString = "Host=oaqtapp01pkg01;Username=grafanaAdmin;Password=grafana_admin;Database=intermedial_qt";
+        string xml2 = $@"<?xml version='1.0' encoding='UTF-8'?>
+            <request>
+                <materialgroup value='{matGroup}'/>
+                <start time='2025-08-02T16:53:00'/>
+                <end time='2025-08-03T16:53:00'/>
+                <operations>
+                    <operation value='OP_ICT'/>
+                    <operation value='OP_VQA'/>
+                </operations>
+            </request>";
 
-    using var conn = new NpgsqlConnection(connectionString);
-    conn.Open();
+        // API1
+        tareas.Add(Task.Run(async () =>
+        {
+            var resultadoApi1 = await ConsultarApiAsync("URL_API1", xml1);
+            using var connApi1 = new NpgsqlConnection(connectionString);
+            connApi1.Open();
+            InsertarConCopyEnStaging(resultadoApi1, connApi1, sfcExcluidos, true);
+        }));
 
-    // Limpiar staging_data al inicio
-    using (var cmd = conn.CreateCommand())
-    {
-        cmd.CommandText = "TRUNCATE TABLE staging_data;";
-        cmd.ExecuteNonQuery();
-    }
-
-    var sfcExcluidos = CargarSfcExcluidos(conn);
-
-    string xml1 = "..."; // XML API1
-    string xml2 = "..."; // XML API2
-
-    // Ejecutar APIs en paralelo y medir tiempos
-    var tareaApi1 = Task.Run(async () =>
-    {
-        var swApi = Stopwatch.StartNew();
-        var resultadoApi1 = await ConsultarApiAsync("URL_API1", xml1);
-        swApi.Stop();
-        Console.WriteLine($"API1 completada en {swApi.ElapsedMilliseconds} ms");
-
-        var swInsert = Stopwatch.StartNew();
-        using var connApi1 = new NpgsqlConnection(connectionString);
-        connApi1.Open();
-        InsertarConCopyEnStaging(resultadoApi1, connApi1, sfcExcluidos, true);
-        swInsert.Stop();
-        Console.WriteLine($"Inserción API1 completada en {swInsert.ElapsedMilliseconds} ms");
-    });
-
-    var tareaApi2 = Task.Run(async () =>
-    {
-        var swApi = Stopwatch.StartNew();
-        var resultadoApi2 = await ConsultarApiAsync("URL_API2", xml2);
-        swApi.Stop();
-        Console.WriteLine($"API2 completada en {swApi.ElapsedMilliseconds} ms");
-
-        var swInsert = Stopwatch.StartNew();
-        using var connApi2 = new NpgsqlConnection(connectionString);
-        connApi2.Open();
-        InsertarConCopyEnStaging(resultadoApi2, connApi2, sfcExcluidos, false);
-        swInsert.Stop();
-        Console.WriteLine($"Inserción API2 completada en {swInsert.ElapsedMilliseconds} ms");
-    });
-
-    await Task.WhenAll(tareaApi1, tareaApi2);
-
-    var swFinalInsert = Stopwatch.StartNew();
-    MoverStagingADataMonitor(conn);
-    swFinalInsert.Stop();
-    Console.WriteLine($"Movido a data_monitor en {swFinalInsert.ElapsedMilliseconds} ms");
-}
+        // API2
+        tareas.Add(Task.Run(async () =>
+        {
+            var resultadoApi2 = await ConsultarApiAsync("URL_API2", xml2);
+            using var connApi2 = new NpgsqlConnection(connectionString);
+            connApi2.Open();
+            InsertarConCopyEnStaging(resultadoApi2, connApi2, sfcExcluidos, false);
+        }));

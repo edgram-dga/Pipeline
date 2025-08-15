@@ -17,3 +17,22 @@
     // Mover todos los datos a data_monitor evitando duplicados
     MoverStagingADataMonitor(conn);
     Console.WriteLine("Datos movidos a data_monitor correctamente.");
+
+
+private static async Task<JArray> ConsultarApiAsync(string url, string xmlBody)
+{
+    var options = new RestClientOptions(url)
+    {
+        Timeout = TimeSpan.FromMinutes(2)
+    };
+    var client = new RestClient(options);
+    var request = new RestRequest("", Method.Post);
+    request.AddHeader("Content-Type", "text/plain");
+    request.AddParameter("text/plain", xmlBody, ParameterType.RequestBody);
+
+    var response = await client.ExecuteAsync(request);
+    if (!response.IsSuccessful)
+        throw new Exception($"Error consultando API {url}: {response.StatusCode}");
+
+    return JArray.Parse(response.Content);
+}

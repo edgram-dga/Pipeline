@@ -21,18 +21,31 @@
 
 private static async Task<JArray> ConsultarApiAsync(string url, string xmlBody)
 {
-    var options = new RestClientOptions(url)
+    try
     {
-        Timeout = TimeSpan.FromMinutes(2)
-    };
-    var client = new RestClient(options);
-    var request = new RestRequest("", Method.Post);
-    request.AddHeader("Content-Type", "text/plain");
-    request.AddParameter("text/plain", xmlBody, ParameterType.RequestBody);
+        var options = new RestClientOptions(url)
+        {
+            Timeout = TimeSpan.FromMinutes(2)
+        };
 
-    var response = await client.ExecuteAsync(request);
-    if (!response.IsSuccessful)
-        throw new Exception($"Error consultando API {url}: {response.StatusCode}");
+        var client = new RestClient(options);
+        var request = new RestRequest("", Method.Post);
+        request.AddHeader("Content-Type", "text/plain");
+        request.AddParameter("text/plain", xmlBody, ParameterType.RequestBody);
 
-    return JArray.Parse(response.Content);
+        var response = await client.ExecuteAsync(request);
+
+        if (!response.IsSuccessful)
+        {
+            Console.WriteLine($"Error consultando API {url}: {response.StatusCode}");
+            return new JArray(); // Retorna vacío si falla
+        }
+
+        return JArray.Parse(response.Content);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Excepción al consultar API {url}: {ex.Message}");
+        return new JArray(); // Retorna vacío en caso de excepción
+    }
 }

@@ -1,0 +1,82 @@
+private static async Task EjecutarProcesoAsync()
+{
+    const int BatchSize = 500;
+    const int TotalPaginas = 5;
+    const string connectionString = "Host=oaqtapp01pkg01;Username=grafanaAdmin;Password=grafana_admin;Database=intermedial_qt";
+
+
+    BlockingCollection<JArray> cola = new();
+
+    Task consumidor = Task.Run(() =>
+    {
+        using var conn = new NpgsqlConnection(connectionString);
+        conn.Open();
+        var sfcExcluidos = CargarSfcExcluidos(conn);
+        List<string> _grupos = getMatGroups(conn);
+
+        foreach (var lote in cola.GetConsumingEnumerable())
+        {
+            InsertarLoteEnBloques(lote, conn, sfcExcluidos);
+        }
+    });
+
+    string xml = "<?xml version='1.0' encoding='UTF-8'?> " +
+        "<request> " +
+        "<materialgroup value ='GM_PCBA'/>" +
+        "<start time='2025-06-01T16:53:00'/>" +
+        "<end time='2025-06-03T16:53:00'/>" +
+        "</request>";
+
+    string xmlapi2 = "<?xml version='1.0' encoding='UTF-8'?> " +
+       "<request> " +
+       "<materialgroup value ='GM_PCBA'/>" +
+       "<start time='2025-08-02T16:53:00'/>" +
+       "<end time='2025-08-03T16:53:00'/>" +
+       "<operations>" +
+            "<operation value='OP_ICT'/>" +
+            "<operation value='OP_VQA'/>" +
+            "</operations>" +
+       "</request>";
+
+    using HttpClient RestClient = new HttpClient();
+
+    // Ejecutar ambas tareas de consulta en paralelo
+    var tareaApi1 = Task.Run(async () =>
+    {
+        var client = new RestClient("https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory_Done");
+
+        // client.Timeout = -1;
+        var request1 = new RestSharp.RestRequest(Method.POST);
+        request1.AddHeader("Content-Type", "text/plain");
+        var body = xml;
+        request1.AddParameter("text/plain", body, ParameterType.RequestBody);
+        IRestResponse response1 = client.Execute(request1);
+        string json1 = response1.Content;
+
+        JArray parsedJArray1 = JArray.Parse(json1);
+        cola.Add(parsedJArray1);
+        Console.WriteLine("termino API 1");
+    });
+
+    var tareaApi2 = Task.Run(async () =>
+    {
+        var client = new RestClient("https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory");
+        client.Timeout = -1;
+        var request2 = new RestSharp.RestRequest(Method.POST);
+        request2.AddHeader("Content-Type", "text/plain");
+        var body = xmlapi2;
+        request2.AddParameter("text/plain", body, ParameterType.RequestBody);
+        IRestResponse response2 = client.Execute(request2);
+
+        string json2 = response2.Content;
+        JArray parsedJArray2 = JArray.Parse(json2);
+        cola.Add(parsedJArray2);
+        Console.WriteLine("termino API 2");
+
+    });
+
+    await Task.WhenAll(tareaApi1, tareaApi2);
+
+    cola.CompleteAdding();
+    await consumidor;
+}

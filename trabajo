@@ -1,75 +1,19 @@
-
-//Con COPY vamos a reducir el tiempo de inserción drásticamente porque todo el lote se envía como un solo stream binario en vez de miles de sentencias INSERT.
-private static void InsertarConCopyEnStaging(JArray data, NpgsqlConnection conn, HashSet<string> sfcExcluidos)
-{
-    using var writer = conn.BeginBinaryImport(@"
-        COPY staging_data (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation)
-        FROM STDIN (FORMAT BINARY)
-    ");
-
-    foreach (var record in data)
+  var tareaApi1 = Task.Run(async () =>
     {
-        string sfc = record["SFC"]?.ToString();
-        if (string.IsNullOrEmpty(sfc) || sfcExcluidos.Contains(sfc))
-            continue;
+        var resultadoApi1 = await ConsultarApiAsync("https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory_Done", xml1);
+        InsertarConCopyEnStaging(resultadoApi1, conn, sfcExcluidos);
+        Console.WriteLine("API 1 insertada en staging_data.");
+    });
 
-        // Campos que cambian de nombre entre APIs
-        string dateState = record["DONE_DATE"]?.ToString() ?? record["DATE_QUEUED"]?.ToString() ?? "";
-        string queueOperation = record["DONE_OPERATION"]?.ToString() ?? record["QUEUE_OPERATION"]?.ToString() ?? "";
+    var tareaApi2 = Task.Run(async () =>
+    {
+        var resultadoApi2 = await ConsultarApiAsync("https://sapmii-mxqt.harman.com:51501/harman.com~mes~reportinterface~web/report/PCBA_Inventory", xml2);
+        InsertarConCopyEnStaging(resultadoApi2, conn, sfcExcluidos);
+        Console.WriteLine("API 2 insertada en staging_data.");
+    });
 
-        writer.StartRow();
-        writer.Write(sfc, NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(record["ITEM"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(dateState, NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(record["ITEM_DESC"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(record["ITEM_TYPE"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(record["ITEM_REV"]?.ToString() ?? "", NpgsqlTypes.NpgsqlDbType.Text);
-        writer.Write(queueOperation, NpgsqlTypes.NpgsqlDbType.Text);
-    }
+    await Task.WhenAll(tareaApi1, tareaApi2);
 
-    writer.Complete();
-}
-
-
-///Movimiento de staging_data a data_monitor sin duplicados Una vez insertados los datos de las dos APIs, hacemos el merge:
-
-private static void MoverStagingADataMonitor(NpgsqlConnection conn)
-{
-    string sql = @"
-        INSERT INTO data_monitor (sfc, item, date_state, item_desc, item_type, item_rev, queue_operation)
-        SELECT sfc, item, date_state, item_desc, item_type, item_rev, queue_operation
-        FROM staging_data
-        ON CONFLICT (sfc) DO UPDATE SET
-            item = EXCLUDED.item,
-            date_state = EXCLUDED.date_state,
-            item_desc = EXCLUDED.item_desc,
-            item_type = EXCLUDED.item_type,
-            item_rev = EXCLUDED.item_rev,
-            queue_operation = EXCLUDED.queue_operation;
-    ";
-
-    using var cmd = new NpgsqlCommand(sql, conn);
-    cmd.ExecuteNonQuery();
-}
-
-
-
-
-3️⃣ Flujo de uso
-
-Después de cada consumo de API (paralelo), insertas en staging_data así:
-
-
-using var conn = new NpgsqlConnection(connectionString);
-conn.Open();
-
-// Insertar API1
-InsertarConCopyEnStaging(resultadoApi1, conn, sfcExcluidos);
-
-// Insertar API2
-InsertarConCopyEnStaging(resultadoApi2, conn, sfcExcluidos);
-
-
-Cuando ambas APIs terminen:
-
-MoverStagingADataMonitor(conn);
+    // Mover todos los datos a data_monitor evitando duplicados
+    MoverStagingADataMonitor(conn);
+    Console.WriteLine("Datos movidos a data_monitor correctamente.");

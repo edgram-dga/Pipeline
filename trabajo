@@ -1,36 +1,11 @@
- // Generar XML dinámico para API1 y API2
-        string xml1 = $@"<?xml version='1.0' encoding='UTF-8'?>
-            <request>
-                <materialgroup value='{matGroup}'/>
-                <start time='2025-06-01T16:53:00'/>
-                <end time='2025-06-03T16:53:00'/>
-            </request>";
+string operacionesXml = string.Join(Environment.NewLine, operaciones.Select(op => $"<operation value='{op}'/>"));
 
-        string xml2 = $@"<?xml version='1.0' encoding='UTF-8'?>
-            <request>
-                <materialgroup value='{matGroup}'/>
-                <start time='2025-08-02T16:53:00'/>
-                <end time='2025-08-03T16:53:00'/>
-                <operations>
-                    <operation value='OP_ICT'/>
-                    <operation value='OP_VQA'/>
-                </operations>
-            </request>";
-
-        // API1
-        tareas.Add(Task.Run(async () =>
-        {
-            var resultadoApi1 = await ConsultarApiAsync("URL_API1", xml1);
-            using var connApi1 = new NpgsqlConnection(connectionString);
-            connApi1.Open();
-            InsertarConCopyEnStaging(resultadoApi1, connApi1, sfcExcluidos, true);
-        }));
-
-        // API2
-        tareas.Add(Task.Run(async () =>
-        {
-            var resultadoApi2 = await ConsultarApiAsync("URL_API2", xml2);
-            using var connApi2 = new NpgsqlConnection(connectionString);
-            connApi2.Open();
-            InsertarConCopyEnStaging(resultadoApi2, connApi2, sfcExcluidos, false);
-        }));
+string xml2 = $@"<?xml version='1.0' encoding='UTF-8'?>
+<request>
+    <materialgroup value='{matGroup}'/>
+    <start time='2025-08-02T16:53:00'/>
+    <end time='2025-08-03T16:53:00'/>
+    <operations>
+        {operacionesXml}
+    </operations>
+</request>";

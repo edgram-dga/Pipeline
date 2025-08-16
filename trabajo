@@ -1,24 +1,46 @@
-private static string GenerarXmlApi1(string materialGroup)
+private static async Task<JArray> ConsultarApiAsync(string url, string xmlBody)
 {
-    return $@"<?xml version='1.0' encoding='UTF-8'?>
-<request>
-    <materialgroup value='{materialGroup}'/>
-    <start time='2025-06-01T16:53:00'/>
-    <end time='2025-06-03T16:53:00'/>
-</request>";
-}
+    int maxIntentos = 5;
+    int delayBase = 1000; // 1s
 
-private static string GenerarXmlApi2(string materialGroup, List<string> operaciones)
-{
-    string operacionesXml = string.Join(Environment.NewLine, operaciones.Select(op => $"<operation value='{op}'/>"));
+    for (int intento = 1; intento <= maxIntentos; intento++)
+    {
+        try
+        {
+            var options = new RestClientOptions(url)
+            {
+                ThrowOnAnyError = false,
+                Timeout = 60000 // 60s
+            };
 
-    return $@"<?xml version='1.0' encoding='UTF-8'?>
-<request>
-    <materialgroup value='{materialGroup}'/>
-    <start time='2025-08-02T16:53:00'/>
-    <end time='2025-08-03T16:53:00'/>
-    <operations>
-        {operacionesXml}
-    </operations>
-</request>";
+            var client = new RestClient(options);
+            var request = new RestRequest("", Method.Post);
+            request.AddHeader("Content-Type", "application/xml");
+            request.AddStringBody(xmlBody, DataFormat.Xml);
+
+            var response = await client.ExecuteAsync(request);
+
+            if (response.IsSuccessful)
+            {
+                return JArray.Parse(response.Content ?? "[]");
+            }
+            else
+            {
+                Console.WriteLine($"[WARN] Error API ({url}): {response.StatusCode} {response.Content}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] Excepción API ({url}): {ex.Message}");
+        }
+
+        // Esperar antes del siguiente intento
+        int delay = delayBase * (int)Math.Pow(2, intento - 1); // backoff exponencial
+        Console.WriteLine($"Reintentando en {delay / 1000} segundos...");
+        await Task.Delay(delay);
+    }
+
+    // Si no se logró después de reintentos, devolver vacío
+    Console.WriteLine($"[ERROR] API {url} no respondió después de {maxIntentos} intentos.");
+    return new JArray();
 }

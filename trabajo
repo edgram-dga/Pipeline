@@ -1,46 +1,61 @@
-private static async Task<JArray> ConsultarApiAsync(string url, string xmlBody)
+// Semáforos globales para controlar concurrencia por API
+private static readonly SemaphoreSlim _semaforoApi1 = new SemaphoreSlim(1, 1);
+private static readonly SemaphoreSlim _semaforoApi2 = new SemaphoreSlim(1, 1);
+
+private static async Task<string> ConsultarApiAsync(string url, string xmlRequest, SemaphoreSlim semaforo, int maxReintentos = 3)
 {
-    int maxIntentos = 5;
-    int delayBase = 1000; // 1s
-
-    for (int intento = 1; intento <= maxIntentos; intento++)
+    await semaforo.WaitAsync(); // 👈 asegura que solo una consulta por API a la vez
+    try
     {
-        try
+        int intento = 0;
+        Exception? ultimaExcepcion = null;
+
+        while (intento < maxReintentos)
         {
-            var options = new RestClientOptions(url)
+            try
             {
-                ThrowOnAnyError = false,
-                Timeout = 60000 // 60s
-            };
+                var options = new RestClientOptions(url)
+                {
+                    ThrowOnAnyError = false,
+                    MaxTimeout = 120000
+                };
 
-            var client = new RestClient(options);
-            var request = new RestRequest("", Method.Post);
-            request.AddHeader("Content-Type", "application/xml");
-            request.AddStringBody(xmlBody, DataFormat.Xml);
+                using var client = new RestClient(options);
 
-            var response = await client.ExecuteAsync(request);
+                var request = new RestRequest("", Method.Post);
+                request.AddHeader("Content-Type", "application/xml");
+                request.AddStringBody(xmlRequest, DataFormat.Xml);
 
-            if (response.IsSuccessful)
-            {
-                return JArray.Parse(response.Content ?? "[]");
+                var response = await client.ExecuteAsync(request);
+
+                if (response.IsSuccessful)
+                {
+                    return response.Content ?? "";
+                }
+
+                // si la API devolvió error → lo guardamos y reintentamos
+                ultimaExcepcion = new Exception(
+                    $"Error en API {url}: {response.StatusCode} - {response.Content}"
+                );
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($"[WARN] Error API ({url}): {response.StatusCode} {response.Content}");
+                ultimaExcepcion = ex;
+            }
+
+            intento++;
+            if (intento < maxReintentos)
+            {
+                int delay = 1000 * intento; // 1s, 2s, 3s...
+                Console.WriteLine($"[WARN] Reintentando {url}, intento {intento}/{maxReintentos} en {delay / 1000}s...");
+                await Task.Delay(delay);
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ERROR] Excepción API ({url}): {ex.Message}");
-        }
 
-        // Esperar antes del siguiente intento
-        int delay = delayBase * (int)Math.Pow(2, intento - 1); // backoff exponencial
-        Console.WriteLine($"Reintentando en {delay / 1000} segundos...");
-        await Task.Delay(delay);
+        throw new Exception($"Error al consultar API {url} tras {maxReintentos} intentos.", ultimaExcepcion);
     }
-
-    // Si no se logró después de reintentos, devolver vacío
-    Console.WriteLine($"[ERROR] API {url} no respondió después de {maxIntentos} intentos.");
-    return new JArray();
+    finally
+    {
+        semaforo.Release(); // 👈 libera la API para la siguiente consulta
+    }
 }
